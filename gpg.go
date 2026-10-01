@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // Decrypt runs gpg --decrypt on the given file and returns the plaintext.
@@ -47,15 +49,19 @@ func Encrypt(plaintext []byte, path string, recipients []string) error {
 	return nil
 }
 
-// Shred overwrites and removes a file using the shred utility.
-func Shred(path string) error {
-	cmd := exec.Command("shred", "--zero", "--remove", path)
-	var errBuf bytes.Buffer
-	cmd.Stderr = &errBuf
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("shred failed: %w\n%s", err, errBuf.String())
+// newMemFile creates an anonymous, memory-only file (Linux memfd_create)
+// and wraps it as an *os.File. Unlike a real temp file, it has no path on
+// any filesystem -- nothing for `ls` to show and nothing to shred -- and
+// its memory is reclaimed unconditionally as soon as every reference to it
+// is closed, including on a crash or SIGKILL. MFD_CLOEXEC keeps the fd
+// from being inherited by gpg or other children spawned afterward; it's
+// handed to the editor explicitly via cmd.ExtraFiles instead.
+func newMemFile(name string) (*os.File, error) {
+	fd, err := unix.MemfdCreate(name, unix.MFD_CLOEXEC)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	return os.NewFile(uintptr(fd), name), nil
 }
 
 // zero overwrites b with zero bytes. Best-effort: it shrinks the window a

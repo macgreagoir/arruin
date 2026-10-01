@@ -4,12 +4,10 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
-	"os/signal"
-	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 )
 
@@ -25,7 +23,7 @@ Commands:
   add    <site> <user> <pass> Add a new entry
   update <site> <user> <pass> Update entry (rotates current password to old)
   delete <site>               Delete entry
-  edit                        Decrypt to temp file, open $EDITOR, re-encrypt, shred
+  edit                        Decrypt to an in-memory file, open $EDITOR, re-encrypt
 
 Flags:
   --db <path>   Path to encrypted secrets file (overrides config)
@@ -179,76 +177,25 @@ func cmdDelete(dbPath string, cfg *Config, site string) {
 }
 
 func cmdEdit(dbPath string, cfg *Config) {
-	// shred is required: without it, a decrypted temp file could be left on
-	// disk indefinitely with no way to erase it. Fail before anything is
-	// decrypted rather than leave that to chance.
-	if _, err := exec.LookPath("shred"); err != nil {
-		fatal("shred is required by the edit command but was not found on PATH: %v", err)
-	}
-
-	// Decrypt to a temp file in a mode-700 temp dir.
-	tmpDir, err := os.MkdirTemp("", "arruin-*")
+	// Decrypt into an anonymous, memory-only file so the editor has
+	// something file-shaped to open without arruin ever creating a
+	// cleartext file on disk. Its memory is reclaimed unconditionally when
+	// the process exits -- even on a crash or Ctrl-C -- so unlike a real
+	// temp file there's no cleanup step that can be skipped.
+	memFile, err := newMemFile("arruin-secrets")
 	if err != nil {
-		fatal("creating temp dir: %v", err)
+		fatal("creating in-memory file: %v", err)
 	}
-
-	// cleanup shreds anything left in tmpDir and removes it, warning loudly
-	// if either step fails instead of silently leaving plaintext on disk.
-	// It's called explicitly on every exit path below (not just deferred),
-	// because fatal() calls os.Exit, which skips deferred functions.
-	var cleanupOnce sync.Once
-	cleanup := func() {
-		cleanupOnce.Do(func() {
-			entries, _ := os.ReadDir(tmpDir)
-			for _, ent := range entries {
-				path := filepath.Join(tmpDir, ent.Name())
-				if err := Shred(path); err != nil {
-					fmt.Fprintf(os.Stderr, "warning: failed to shred %s: %v\n", path, err)
-					fmt.Fprintf(os.Stderr, "warning: this file may still contain cleartext secrets -- remove it manually\n")
-				}
-			}
-			if err := os.Remove(tmpDir); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to remove %s: %v\n", tmpDir, err)
-			}
-		})
-	}
-	defer cleanup()
-
-	// bail cleans up before handing off to fatal, since fatal's os.Exit
-	// would otherwise skip the deferred cleanup above.
-	bail := func(format string, a ...any) {
-		cleanup()
-		fatal(format, a...)
-	}
-
-	// Without a handler, SIGINT/SIGTERM (e.g. Ctrl-C while the editor is
-	// open) terminates the process immediately and skips the deferred
-	// cleanup, leaving decrypted plaintext on disk. Intercept and clean up
-	// first.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(sigCh)
-	go func() {
-		if _, ok := <-sigCh; ok {
-			cleanup()
-			os.Exit(1)
-		}
-	}()
-
-	if err := os.Chmod(tmpDir, 0700); err != nil {
-		bail("chmod temp dir: %v", err)
-	}
-
-	tmpFile := filepath.Join(tmpDir, "secrets.txt")
+	defer memFile.Close()
 
 	plaintext, err := Decrypt(dbPath)
 	if err != nil {
-		bail("%v", err)
+		fatal("%v", err)
 	}
-	if err := os.WriteFile(tmpFile, plaintext, 0600); err != nil {
+	if _, err := memFile.Write(plaintext); err != nil {
 		zero(plaintext)
 		unlock(plaintext)
-		bail("writing temp file: %v", err)
+		fatal("writing to in-memory file: %v", err)
 	}
 	zero(plaintext)
 	unlock(plaintext)
@@ -257,27 +204,33 @@ func cmdEdit(dbPath string, cfg *Config) {
 	if editor == "" {
 		editor = "vi"
 	}
-	editorCmd := exec.Command(editor, tmpFile)
+	// memFile is inherited by the child as fd 3 (the first ExtraFiles
+	// entry); /proc/self/fd/3 resolves relative to the editor's own
+	// process, not arruin's.
+	editorCmd := exec.Command(editor, "/proc/self/fd/3")
+	editorCmd.ExtraFiles = []*os.File{memFile}
 	editorCmd.Stdin = os.Stdin
 	editorCmd.Stdout = os.Stdout
 	editorCmd.Stderr = os.Stderr
 	if err := editorCmd.Run(); err != nil {
-		bail("editor exited with error: %v", err)
+		fatal("editor exited with error: %v", err)
 	}
 
-	edited, err := os.ReadFile(tmpFile)
+	if _, err := memFile.Seek(0, io.SeekStart); err != nil {
+		fatal("seeking in-memory file: %v", err)
+	}
+	edited, err := io.ReadAll(memFile)
 	if err != nil {
-		bail("reading edited file: %v", err)
+		fatal("reading edited content: %v", err)
 	}
 	lock(edited)
 	if err := Encrypt(edited, dbPath, cfg.Recipients); err != nil {
 		zero(edited)
 		unlock(edited)
-		bail("%v", err)
+		fatal("%v", err)
 	}
 	zero(edited)
 	unlock(edited)
-	// Shred is handled by the deferred cleanup above.
 	fmt.Println("Saved.")
 }
 
