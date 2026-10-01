@@ -213,6 +213,15 @@ func cmdEdit(dbPath string, cfg *Config) {
 	editorCmd.Stdout = os.Stdout
 	editorCmd.Stderr = os.Stderr
 	if err := editorCmd.Run(); err != nil {
+		// The editor died or exited non-zero, but arruin is still running
+		// and still holds memFile -- read back and zero whatever it left
+		// behind before exiting, same as every other path here. Errors
+		// are ignored: we're already failing, and this is best-effort.
+		if _, serr := memFile.Seek(0, io.SeekStart); serr == nil {
+			if leftover, rerr := io.ReadAll(memFile); rerr == nil {
+				zero(leftover)
+			}
+		}
 		fatal("editor exited with error: %v", err)
 	}
 
@@ -274,7 +283,7 @@ func disableCoreDumps() {
 // processes from ptrace-attaching or reading /proc/<pid>/mem while arruin
 // is holding decrypted secrets. The same mechanism gpg-agent and ssh-agent
 // use. Unlike RLIMIT_CORE, this flag resets on execve, so it does not carry
-// over to the gpg/shred/$EDITOR child processes arruin spawns.
+// over to the gpg/$EDITOR child processes arruin spawns.
 func disableDumpable() {
 	const prSetDumpable = 4 // linux/prctl.h
 	if _, _, errno := syscall.Syscall(syscall.SYS_PRCTL, prSetDumpable, 0, 0); errno != 0 {

@@ -56,6 +56,21 @@ func Encrypt(plaintext []byte, path string, recipients []string) error {
 // is closed, including on a crash or SIGKILL. MFD_CLOEXEC keeps the fd
 // from being inherited by gpg or other children spawned afterward; it's
 // handed to the editor explicitly via cmd.ExtraFiles instead.
+//
+// Its content is deliberately not mlocked, after investigation concluded
+// it isn't practically achievable. Locking it requires pre-truncating the
+// file to a fixed size, mmapping and mlocking that range; but the file
+// then has to be shrunk back down to the real content's size so $EDITOR
+// sees an accurately-sized file (not one padded with nulls) -- and
+// shrinking discards the lock. Content written afterward, by the editor
+// or by arruin itself, does not regain it, even though the surrounding
+// virtual memory range still reports as locked (confirmed against
+// /proc/self/smaps_rollup's "Locked:" figure, not assumed from
+// VM_LOCKED/VmLck bookkeeping alone, which is misleading here). The only
+// windows actually lockable this way are sub-millisecond and already
+// covered by the zero+lock on the surrounding []byte in cmdEdit; the
+// editor's entire interactive session can't be protected by mlock
+// regardless of how this function is written.
 func newMemFile(name string) (*os.File, error) {
 	fd, err := unix.MemfdCreate(name, unix.MFD_CLOEXEC)
 	if err != nil {

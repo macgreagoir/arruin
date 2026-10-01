@@ -17,7 +17,7 @@ The default name of the encrypted secrets file is db.asc
 Decrypted secrets are handled with the following precautions:
 
 * The `edit` command hands decrypted secrets to `$EDITOR` through an anonymous, memory-only file (`memfd_create`) rather than a real temporary file -- it has no path on any filesystem, so there's nothing to leave behind or shred, and its memory is reclaimed unconditionally when the process exits, even on a crash or Ctrl-C.
-* Decrypted buffers are zeroed and `mlock`ed against swap while in use, for every command, not just `edit`. (The in-memory file's own backing pages aren't yet covered by this -- planned as a follow-up.)
+* Decrypted buffers are zeroed and `mlock`ed against swap while in use, for every command, not just `edit`. The in-memory file's own backing pages are deliberately *not* locked this way -- investigated and found not practically achievable on Linux; see `newMemFile`'s comment in `gpg.go` for why.
 * The process disables core dumps and marks itself non-dumpable (`prctl(PR_SET_DUMPABLE, 0)`) -- the same measures GnuPG's `gpg-agent` and OpenSSH's `ssh-agent` take for processes holding key material.
 
 These are best-effort protections, not guarantees -- see the comments in `gpg.go` and `main.go` for their specific limitations.
