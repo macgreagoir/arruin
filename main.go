@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 )
 
 const usage = `Ár Rúin -- local encrypted secrets manager
@@ -178,28 +181,55 @@ func cmdEdit(dbPath string, cfg *Config) {
 	if err != nil {
 		fatal("creating temp dir: %v", err)
 	}
-	// Ensure we always shred whatever landed in tmpDir.
-	defer func() {
-		// Best-effort shred of anything remaining.
-		entries, _ := os.ReadDir(tmpDir)
-		for _, ent := range entries {
-			_ = Shred(filepath.Join(tmpDir, ent.Name()))
+
+	// cleanup shreds anything left in tmpDir and removes it. It's called
+	// explicitly on every exit path below (not just deferred), because
+	// fatal() calls os.Exit, which skips deferred functions.
+	var cleanupOnce sync.Once
+	cleanup := func() {
+		cleanupOnce.Do(func() {
+			entries, _ := os.ReadDir(tmpDir)
+			for _, ent := range entries {
+				_ = Shred(filepath.Join(tmpDir, ent.Name()))
+			}
+			_ = os.Remove(tmpDir)
+		})
+	}
+	defer cleanup()
+
+	// bail cleans up before handing off to fatal, since fatal's os.Exit
+	// would otherwise skip the deferred cleanup above.
+	bail := func(format string, a ...any) {
+		cleanup()
+		fatal(format, a...)
+	}
+
+	// Without a handler, SIGINT/SIGTERM (e.g. Ctrl-C while the editor is
+	// open) terminates the process immediately and skips the deferred
+	// cleanup, leaving decrypted plaintext on disk. Intercept and clean up
+	// first.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+	go func() {
+		if _, ok := <-sigCh; ok {
+			cleanup()
+			os.Exit(1)
 		}
-		_ = os.Remove(tmpDir)
 	}()
 
 	if err := os.Chmod(tmpDir, 0700); err != nil {
-		fatal("chmod temp dir: %v", err)
+		bail("chmod temp dir: %v", err)
 	}
 
 	tmpFile := filepath.Join(tmpDir, "secrets.txt")
 
 	plaintext, err := Decrypt(dbPath)
 	if err != nil {
-		fatal("%v", err)
+		bail("%v", err)
 	}
 	if err := os.WriteFile(tmpFile, plaintext, 0600); err != nil {
-		fatal("writing temp file: %v", err)
+		bail("writing temp file: %v", err)
 	}
 
 	editor := os.Getenv("EDITOR")
@@ -211,15 +241,15 @@ func cmdEdit(dbPath string, cfg *Config) {
 	editorCmd.Stdout = os.Stdout
 	editorCmd.Stderr = os.Stderr
 	if err := editorCmd.Run(); err != nil {
-		fatal("editor exited with error: %v", err)
+		bail("editor exited with error: %v", err)
 	}
 
 	edited, err := os.ReadFile(tmpFile)
 	if err != nil {
-		fatal("reading edited file: %v", err)
+		bail("reading edited file: %v", err)
 	}
 	if err := Encrypt(edited, dbPath, cfg.Recipients); err != nil {
-		fatal("%v", err)
+		bail("%v", err)
 	}
 	// Shred is handled by the deferred cleanup above.
 	fmt.Println("Saved.")
