@@ -52,3 +52,13 @@ func Shred(path string) error {
 	}
 	return nil
 }
+
+// zero overwrites b with zero bytes. Best-effort: it shrinks the window a
+// decrypted secret sits live in memory once we're done with it, but Go
+// gives no guarantee against stale copies left by buffer growth or GC, nor
+// against the bytes having already reached swap before this runs.
+func zero(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
+}

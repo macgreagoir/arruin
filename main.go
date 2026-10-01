@@ -32,6 +32,8 @@ Flags:
 `
 
 func main() {
+	disableCoreDumps()
+
 	dbFlag := flag.String("db", "", "path to encrypted secrets file")
 	flag.Usage = func() { fmt.Fprint(os.Stderr, usage) }
 	flag.Parse()
@@ -243,8 +245,10 @@ func cmdEdit(dbPath string, cfg *Config) {
 		bail("%v", err)
 	}
 	if err := os.WriteFile(tmpFile, plaintext, 0600); err != nil {
+		zero(plaintext)
 		bail("writing temp file: %v", err)
 	}
+	zero(plaintext)
 
 	editor := os.Getenv("EDITOR")
 	if editor == "" {
@@ -263,8 +267,10 @@ func cmdEdit(dbPath string, cfg *Config) {
 		bail("reading edited file: %v", err)
 	}
 	if err := Encrypt(edited, dbPath, cfg.Recipients); err != nil {
+		zero(edited)
 		bail("%v", err)
 	}
+	zero(edited)
 	// Shred is handled by the deferred cleanup above.
 	fmt.Println("Saved.")
 }
@@ -275,13 +281,25 @@ func mustLoadDB(dbPath string) *DB {
 	if err != nil {
 		fatal("%v", err)
 	}
+	defer zero(plaintext)
 	return ParseDB(plaintext)
 }
 
 // mustSaveDB serialises and encrypts the db, exiting on any error.
 func mustSaveDB(db *DB, dbPath string, cfg *Config) {
-	if err := Encrypt(db.Serialise(), dbPath, cfg.Recipients); err != nil {
+	serialised := db.Serialise()
+	defer zero(serialised)
+	if err := Encrypt(serialised, dbPath, cfg.Recipients); err != nil {
 		fatal("saving db: %v", err)
+	}
+}
+
+// disableCoreDumps prevents a crash from writing process memory -- which may
+// contain decrypted secrets -- to disk as a core dump.
+func disableCoreDumps() {
+	limit := syscall.Rlimit{Cur: 0, Max: 0}
+	if err := syscall.Setrlimit(syscall.RLIMIT_CORE, &limit); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not disable core dumps: %v\n", err)
 	}
 }
 
