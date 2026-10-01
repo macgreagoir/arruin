@@ -33,6 +33,7 @@ Flags:
 
 func main() {
 	disableCoreDumps()
+	disableDumpable()
 
 	dbFlag := flag.String("db", "", "path to encrypted secrets file")
 	flag.Usage = func() { fmt.Fprint(os.Stderr, usage) }
@@ -300,6 +301,19 @@ func disableCoreDumps() {
 	limit := syscall.Rlimit{Cur: 0, Max: 0}
 	if err := syscall.Setrlimit(syscall.RLIMIT_CORE, &limit); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not disable core dumps: %v\n", err)
+	}
+}
+
+// disableDumpable marks the process non-dumpable (Linux prctl
+// PR_SET_DUMPABLE), which, beyond suppressing core dumps, also stops other
+// processes from ptrace-attaching or reading /proc/<pid>/mem while arruin
+// is holding decrypted secrets. The same mechanism gpg-agent and ssh-agent
+// use. Unlike RLIMIT_CORE, this flag resets on execve, so it does not carry
+// over to the gpg/shred/$EDITOR child processes arruin spawns.
+func disableDumpable() {
+	const prSetDumpable = 4 // linux/prctl.h
+	if _, _, errno := syscall.Syscall(syscall.SYS_PRCTL, prSetDumpable, 0, 0); errno != 0 {
+		fmt.Fprintf(os.Stderr, "warning: could not mark process non-dumpable: %v\n", errno)
 	}
 }
 
