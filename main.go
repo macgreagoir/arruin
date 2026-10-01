@@ -247,9 +247,11 @@ func cmdEdit(dbPath string, cfg *Config) {
 	}
 	if err := os.WriteFile(tmpFile, plaintext, 0600); err != nil {
 		zero(plaintext)
+		unlock(plaintext)
 		bail("writing temp file: %v", err)
 	}
 	zero(plaintext)
+	unlock(plaintext)
 
 	editor := os.Getenv("EDITOR")
 	if editor == "" {
@@ -267,11 +269,14 @@ func cmdEdit(dbPath string, cfg *Config) {
 	if err != nil {
 		bail("reading edited file: %v", err)
 	}
+	lock(edited)
 	if err := Encrypt(edited, dbPath, cfg.Recipients); err != nil {
 		zero(edited)
+		unlock(edited)
 		bail("%v", err)
 	}
 	zero(edited)
+	unlock(edited)
 	// Shred is handled by the deferred cleanup above.
 	fmt.Println("Saved.")
 }
@@ -282,6 +287,7 @@ func mustLoadDB(dbPath string) *DB {
 	if err != nil {
 		fatal("%v", err)
 	}
+	defer unlock(plaintext)
 	defer zero(plaintext)
 	return ParseDB(plaintext)
 }
@@ -289,10 +295,16 @@ func mustLoadDB(dbPath string) *DB {
 // mustSaveDB serialises and encrypts the db, exiting on any error.
 func mustSaveDB(db *DB, dbPath string, cfg *Config) {
 	serialised := db.Serialise()
-	defer zero(serialised)
+	lock(serialised)
+	// fatal's os.Exit would skip a deferred zero/unlock, so both are called
+	// explicitly on every exit path instead.
 	if err := Encrypt(serialised, dbPath, cfg.Recipients); err != nil {
+		zero(serialised)
+		unlock(serialised)
 		fatal("saving db: %v", err)
 	}
+	zero(serialised)
+	unlock(serialised)
 }
 
 // disableCoreDumps prevents a crash from writing process memory -- which may
