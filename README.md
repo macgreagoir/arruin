@@ -16,4 +16,5 @@ The default name of the encrypted secrets file is db.asc
 
 * Linux
 * GNUPG
+* `shred` (GNU coreutils)
 * Existing GPG keys -- arruin does not manage keys

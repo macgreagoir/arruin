@@ -176,23 +176,37 @@ func cmdDelete(dbPath string, cfg *Config, site string) {
 }
 
 func cmdEdit(dbPath string, cfg *Config) {
+	// shred is required: without it, a decrypted temp file could be left on
+	// disk indefinitely with no way to erase it. Fail before anything is
+	// decrypted rather than leave that to chance.
+	if _, err := exec.LookPath("shred"); err != nil {
+		fatal("shred is required by the edit command but was not found on PATH: %v", err)
+	}
+
 	// Decrypt to a temp file in a mode-700 temp dir.
 	tmpDir, err := os.MkdirTemp("", "arruin-*")
 	if err != nil {
 		fatal("creating temp dir: %v", err)
 	}
 
-	// cleanup shreds anything left in tmpDir and removes it. It's called
-	// explicitly on every exit path below (not just deferred), because
-	// fatal() calls os.Exit, which skips deferred functions.
+	// cleanup shreds anything left in tmpDir and removes it, warning loudly
+	// if either step fails instead of silently leaving plaintext on disk.
+	// It's called explicitly on every exit path below (not just deferred),
+	// because fatal() calls os.Exit, which skips deferred functions.
 	var cleanupOnce sync.Once
 	cleanup := func() {
 		cleanupOnce.Do(func() {
 			entries, _ := os.ReadDir(tmpDir)
 			for _, ent := range entries {
-				_ = Shred(filepath.Join(tmpDir, ent.Name()))
+				path := filepath.Join(tmpDir, ent.Name())
+				if err := Shred(path); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: failed to shred %s: %v\n", path, err)
+					fmt.Fprintf(os.Stderr, "warning: this file may still contain cleartext secrets -- remove it manually\n")
+				}
 			}
-			_ = os.Remove(tmpDir)
+			if err := os.Remove(tmpDir); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to remove %s: %v\n", tmpDir, err)
+			}
 		})
 	}
 	defer cleanup()
