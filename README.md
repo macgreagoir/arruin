@@ -12,6 +12,29 @@ Other secrets may also be added in a schemaless and multiline format but they wo
 
 The default name of the encrypted secrets file is db.asc
 
+## Usage
+
+```
+$ arruin --help
+Ár Rúin -- local encrypted secrets manager
+
+Usage:
+  arruin [--db <path>] <command> [args]
+
+Commands:
+  init                          Configure recipients and db path
+  list                          List all sites
+  get      <site>               Print entry for site
+  add      <site> <user> <pass> Add a new entry
+  generate <site> <user>        Generate a password, add a new entry, print it
+  update   <site> <user> <pass> Update entry (rotates current password to old)
+  delete   <site>               Delete entry
+  edit                          Decrypt to an in-memory file, open $EDITOR, re-encrypt
+
+Flags:
+  --db <path>   Path to encrypted secrets file (overrides config)
+```
+
 ## Hardening
 
 Decrypted secrets are handled with the following precautions:
