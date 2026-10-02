@@ -17,13 +17,14 @@ Usage:
   arruin [--db <path>] <command> [args]
 
 Commands:
-  init                        Configure recipients and db path
-  list                        List all sites
-  get    <site>               Print entry for site
-  add    <site> <user> <pass> Add a new entry
-  update <site> <user> <pass> Update entry (rotates current password to old)
-  delete <site>               Delete entry
-  edit                        Decrypt to an in-memory file, open $EDITOR, re-encrypt
+  init                          Configure recipients and db path
+  list                          List all sites
+  get      <site>               Print entry for site
+  add      <site> <user> <pass> Add a new entry
+  generate <site> <user>        Generate a password, add a new entry, print it
+  update   <site> <user> <pass> Update entry (rotates current password to old)
+  delete   <site>               Delete entry
+  edit                          Decrypt to an in-memory file, open $EDITOR, re-encrypt
 
 Flags:
   --db <path>   Path to encrypted secrets file (overrides config)
@@ -63,6 +64,9 @@ func main() {
 	case "add":
 		requireArgs(cmd, rest, 3)
 		cmdAdd(dbPath, cfg, rest[0], rest[1], rest[2])
+	case "generate":
+		requireArgs(cmd, rest, 2)
+		cmdGenerate(dbPath, cfg, rest[0], rest[1])
 	case "update":
 		requireArgs(cmd, rest, 3)
 		cmdUpdate(dbPath, cfg, rest[0], rest[1], rest[2])
@@ -156,6 +160,20 @@ func cmdAdd(dbPath string, cfg *Config, site, user, pass string) {
 	}
 	mustSaveDB(db, dbPath, cfg)
 	fmt.Printf("Added %s\n", site)
+}
+
+func cmdGenerate(dbPath string, cfg *Config, site, user string) {
+	db := mustLoadDB(dbPath)
+	pw, err := generatePassword(generatedPasswordLength)
+	if err != nil {
+		fatal("generating password: %v", err)
+	}
+	e := Entry{Site: site, User: user, Password: pw}
+	if err := db.Add(e); err != nil {
+		fatal("%v", err)
+	}
+	mustSaveDB(db, dbPath, cfg)
+	fmt.Println(e)
 }
 
 func cmdUpdate(dbPath string, cfg *Config, site, user, pass string) {
